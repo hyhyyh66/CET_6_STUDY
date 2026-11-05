@@ -1,0 +1,19 @@
+# Personal reading materials, drafts, highlights and notes
+/data/
+
+# Generated Python bytecode and local environments
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Temporary files from rebuilding the bundled offline dictionary
+/assets/dictionary.new
+/assets/dictionary.new-journal
+
+# Local editor and OS files
+/.vscode/
+/.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store
