@@ -5,6 +5,8 @@ const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;",
 const pattern = /[A-Za-z]+(?:['’\-][A-Za-z]+)*/g;
 let doc = null, review = [], marksBySentence = new Map(), generation = 0;
 let changing = false, activeWord = null, toastTimer;
+let sentenceClickTimer, selectedInReader = false;
+let batchImport = null;
 const empty = (title, description) => `<div class="empty"><h3>${title}</h3><p class="quiet">${description}</p></div>`;
 const hint = "词典暂未收录，可手动填写释义。";
 function notify(message) {
@@ -43,7 +45,7 @@ function words(text, marks, interactive = false) {
   return html + esc(text.slice(end));
 }
 function sentenceHtml(s) {
-  return `<span class="sentence" id="s-${s.id}" data-sentence="${s.id}">${words(s.text, marksBySentence.get(s.id) || [], true)}</span>`;
+  return `<span class="sentence" id="s-${s.id}" data-sentence="${s.id}"><span class="sentence-text">${words(s.text, marksBySentence.get(s.id) || [], true)}</span><button class="sentence-play" data-action="speak-reader-sentence" aria-label="朗读这句">▷</button></span>`;
 }
 function library(items) {
   main.innerHTML = `<section class="hero"><div><h1>我的阅读书桌</h1><p>从一篇英语阅读开始，把遇到的生词留在原句里。</p><button class="primary" data-action="import">＋ 导入阅读材料</button></div><div class="books" aria-hidden="true"><b></b><b></b><b></b><b></b></div></section>
@@ -56,15 +58,15 @@ function reader() {
     if (!groups.has(s.para)) groups.set(s.para, []);
     groups.get(s.para).push(sentenceHtml(s));
   }
-  main.innerHTML = `<a class="back" href="#library">← 我的书桌</a><div class="reader-head"><div><h1>${esc(doc.title)}</h1><p class="meta">${esc(doc.kind.toUpperCase())}　/　${doc.state === "draft" ? "阅读草稿" : "已提交的文章笔记"}</p></div></div><div class="reader"><article class="sheet prose" aria-label="文章正文">${[...groups.values()].map(g => "<p>" + g.join(" ") + "</p>").join("")}</article><aside class="panel" id="notes"></aside></div>`;
+  main.innerHTML = `<a class="back" href="#library">← 我的书桌</a><div class="reader-head"><div><h1>${esc(doc.title)}</h1><p class="meta">${esc(doc.kind.toUpperCase())}　/　${doc.state === "draft" ? "阅读草稿" : "已提交的文章笔记"}</p></div><span class="quiet"><span class="speech-hint">点击句子朗读 · </span>双击或划词查义</span></div><div class="reader"><article class="sheet prose" aria-label="文章正文">${[...groups.values()].map(g => "<p>" + g.join(" ") + "</p>").join("")}</article><aside class="panel" id="notes"></aside></div>`;
   sidebar();
 }
 function sidebar() {
   const draft = doc.state === "draft";
-  $("#notes").innerHTML = `<div class="row"><h2>${draft ? "划词笔记" : "文章笔记"}</h2><span class="state">${doc.marks.length} 处</span></div><p class="quiet">${draft ? "选中或双击英文单词查看释义。划词自动保存，可在提交前移除。" : "点击高亮单词，查看学习时保存的释义。"}</p><div class="sidewords">${doc.marks.map(m => `<button class="sideword" data-action="locate" data-sid="${m.sentence}" data-tok="${m.token}"><strong>${esc(m.word)}</strong><small>${esc(m.meaning || hint)}</small></button>`).join("")}</div>${draft ? '<button class="primary" data-action="preview">提交学习笔记</button>' : '<button class="primary" data-action="review">查看原句复习</button>'}`;
+  $("#notes").innerHTML = `<div class="row"><h2>${draft ? "划词笔记" : "文章笔记"}</h2><span class="state">${doc.marks.length} 处</span></div><p class="quiet">${draft ? "选中或双击英文单词查看释义。划词和释义修改自动保存，标记可随时移除。" : "可继续划词、编辑释义或移除标记。修改自动保存并同步到原句复习和生词复习。"}</p><div class="sidewords">${doc.marks.map(m => `<button class="sideword" data-action="locate" data-sid="${m.sentence}" data-tok="${m.token}"><strong>${esc(m.word)}</strong><small>${esc(m.meaning || hint)}</small></button>`).join("")}</div>${draft ? '<button class="primary" data-action="preview">提交学习笔记</button>' : '<button class="primary" data-action="review">查看原句复习</button>'}`;
 }
 function reviewCard(s, list, preview = false) {
-  return `<section class="reviewcard"><p class="example">${words(s.text, list)}</p><div class="defs">${list.map(m => `<div class="def"><strong>${esc(m.word)}</strong><span class="meaning">${esc(m.meaning || "暂未填写释义")}</span>${preview ? `<button class="link" data-action="drop" data-sid="${s.id}" data-tok="${m.token}">移除</button>` : ""}</div>`).join("")}</div>${preview ? "" : `<div class="cardfoot"><span>${esc(s.title)}</span><a href="#article/${s.article}/${s.id}">回到原文 ↗</a></div>`}</section>`;
+  return `<section class="reviewcard"><p class="example">${words(s.text, list)}</p><div class="defs">${list.map(m => `<div class="def"><strong>${esc(m.word)}</strong><span class="meaning">${esc(m.meaning || "暂未填写释义")}</span>${preview ? `<button class="link" data-action="drop" data-sid="${s.id}" data-tok="${m.token}">移除</button>` : ""}</div>`).join("")}</div>${preview ? "" : `<div class="cardfoot"><span>${esc(s.title)}</span><button class="minor" data-action="speak-sentence">朗读原句</button><a href="#article/${s.article}/${s.id}">回到原文 ↗</a></div>`}</section>`;
 }
 function reviewPage(initial) {
   const articles = new Map(review.map(s => [s.article,s.title]));
@@ -84,7 +86,7 @@ function vocabularyPage(sentences) {
   }
   const cards = Array.from(vocabulary, ([word, meanings]) => {
     const definitions = meanings.size ? Array.from(meanings, text => `<p>${esc(text)}</p>`).join("") : "<p>暂未填写释义</p>";
-    return `<details class="reviewcard vocab-card" open><summary lang="en">${esc(word)}</summary><div class="vocab-definitions">${definitions}</div></details>`;
+    return `<details class="reviewcard vocab-card" open><summary><span lang="en">${esc(word)}</span><button class="minor" data-action="speak-word" data-word="${esc(word)}" aria-label="朗读 ${esc(word)}">发音</button></summary><div class="vocab-definitions">${definitions}</div></details>`;
   });
   main.innerHTML = `<div class="reviewhead"><div><h1>生词复习</h1><p class="quiet">共 ${cards.length} 个生词</p></div></div>` +
     (cards.length ? `<div class="cards">${cards.join("")}</div>` : empty("还没有可复习的生词", "在文章里划词并提交学习笔记后，就可以在这里复习。"));
@@ -96,7 +98,7 @@ function displayWord(sid, tok) {
   const anchor = tokenNode(sid, tok);
   if (!m || !anchor) return;
   activeWord = {sid, tok};
-  pop.innerHTML = `<div class="row"><strong>${esc(m.word)}</strong><button class="minor" data-action="hide" aria-label="收起释义">✕</button></div><div class="meta">${m.phonetic ? "/" + esc(m.phonetic) + "/ " : ""}${m.lemma.toLowerCase() !== m.word.toLowerCase() ? "原形 " + esc(m.lemma) : ""}</div><div class="definition">${esc(m.meaning || hint)}</div>${doc.state === "draft" ? '<div class="popactions"><button class="link" data-action="edit">编辑释义</button><button class="minor" data-action="remove">移除标记</button></div>' : ""}`;
+  pop.innerHTML = `<div class="row"><strong>${esc(m.word)}</strong><button class="minor" data-action="hide" aria-label="收起释义">✕</button></div><div class="meta">${m.phonetic ? "/" + esc(m.phonetic) + "/ " : ""}${m.lemma.toLowerCase() !== m.word.toLowerCase() ? "原形 " + esc(m.lemma) : ""}</div><button class="minor" data-action="speak-word" data-word="${esc(m.word)}">单词发音</button><div class="definition">${esc(m.meaning || hint)}</div><div class="popactions"><button class="link" data-action="edit">编辑释义</button><button class="minor" data-action="remove">移除标记</button></div>`;
   pop.hidden = false;
   const r = anchor.getBoundingClientRect();
   pop.style.left = Math.max(10, Math.min(r.left, innerWidth-pop.offsetWidth-10)) + "px";
@@ -124,7 +126,6 @@ async function mutate(action, fields = {}) {
 async function choose(sid, tok) {
   if (!doc || changing) return;
   if (!(marksBySentence.get(sid) || []).some(m => m.token === tok)) {
-    if (doc.state !== "draft") return;
     if (!await mutate("mark", {sentence:sid, token:tok})) return;
   }
   displayWord(sid, tok);
@@ -137,6 +138,8 @@ function preview() {
 }
 async function route() {
   const ticket = ++generation;
+  clearTimeout(sentenceClickTimer);
+  speechView(false);
   doc = null; closePop(); if (dialog.open) dialog.close();
   const parts = location.hash.slice(1).split("/");
   const inReview = parts[0] === "review";
@@ -148,13 +151,14 @@ async function route() {
     if (parts[0] === "article" && /^\d+$/.test(parts[1])) {
       const loaded = await api("/api/articles/" + parts[1]);
       if (ticket !== generation) return;
-      doc = loaded; indexMarks(); reader();
+      doc = loaded; indexMarks(); reader(); speechView(true);
       const target = /^\d+$/.test(parts[2]) && $("#s-"+parts[2]);
       if (target) { target.classList.add("focus-sentence"); target.scrollIntoView({block:"center"}); }
       else window.scrollTo(0, Number(localStorage.getItem("position-"+doc.id)) || 0);
     } else if (inReview || inVocabulary) {
       const data = await api("/api/review");
       if (ticket !== generation) return;
+      speechView(true);
       if (inVocabulary) {
         vocabularyPage(data);
       } else {
@@ -171,9 +175,77 @@ async function route() {
     if (ticket === generation) main.innerHTML = empty("暂时无法打开",esc(e.message)) + '<button class="soft" data-action="reload">重新加载</button>';
   }
 }
-async function importFile(file) {
+function fileKind(file) {
   const kind = file.name.split(".").pop().toLowerCase();
   if (!["txt","pdf"].includes(kind) || !file.size || file.size > 20*1024*1024) throw new Error("请选择 20 MB 以内的非空 TXT 或 PDF 文件。");
+  return kind;
+}
+function updateBatchDialog(job) {
+  const list = $("#batch-list");
+  if (!list || !dialog.open) return;
+  const done = job.items.filter(item => item.id).length;
+  $("#batch-summary").textContent = `已导入 ${done} / ${job.items.length} 篇`;
+  list.innerHTML = job.items.map(item => `<li><strong>${esc(item.file.name)}</strong><span class="${item.failed ? "err" : "quiet"}">${esc(item.status)}</span></li>`).join("");
+  $("#batch-stop").hidden = !job.running;
+  $("#batch-stop").textContent = job.stopRequested ? "正在停止…" : "停止后续导入";
+  $("#batch-retry").hidden = job.running || done === job.items.length;
+  $("#batch-done").hidden = job.running;
+}
+async function runBatchImport(job) {
+  job.running = true;
+  job.stopRequested = false;
+  updateBatchDialog(job);
+  for (const item of job.items) {
+    if (job.stopRequested) break;
+    if (item.id) continue;
+    item.failed = false;
+    item.status = "正在提取正文…";
+    updateBatchDialog(job);
+    try {
+      const kind = fileKind(item.file);
+      if (!item.text) item.text = (await api("/api/extract/" + kind, item.file, true)).text;
+      if (job.stopRequested) break;
+      item.status = "正在保存…";
+      updateBatchDialog(job);
+      const result = await api("/api/articles", {
+        title:item.file.name.replace(/\.[^.]+$/, "").trim() || item.file.name,
+        kind, text:item.text, requestId:item.requestId
+      });
+      item.id = result.id;
+      item.status = "导入成功";
+      item.text = null;
+    } catch (error) {
+      item.failed = true;
+      item.status = error.message;
+    }
+    updateBatchDialog(job);
+  }
+  job.running = false;
+  for (const item of job.items) {
+    if (!item.id && !item.failed) item.status = "已停止";
+  }
+  updateBatchDialog(job);
+  if (!dialog.open || !$("#batch-list")) {
+    const done = job.items.filter(item => item.id).length;
+    batchImport = null;
+    await route();
+    notify(`本次已导入 ${done} / ${job.items.length} 篇`);
+  }
+}
+function importFiles(files) {
+  if (batchImport?.running) {
+    notify("当前批次正在处理，请稍候。");
+    return;
+  }
+  if (files.length === 1) return importFile(files[0]).catch(report);
+  if (!files.length) return;
+  batchImport = {items:files.map(file => ({file, requestId:crypto.randomUUID(), status:"等待导入"}))};
+  showDialog("批量导入阅读材料", '<p class="quiet">每个文件分别保存为一篇阅读材料。批量导入直接采用提取的正文，导入后可从书桌打开学习。</p><p id="batch-summary" role="status"></p><ul id="batch-list"></ul>',
+    '<button class="soft" id="batch-stop" data-action="batch-stop">停止后续导入</button><button class="soft" id="batch-retry" data-action="batch-retry" hidden>重试未完成项</button><button class="primary" id="batch-done" data-action="batch-done" hidden>返回书桌</button>');
+  runBatchImport(batchImport).catch(report);
+}
+async function importFile(file) {
+  const kind = fileKind(file);
   const id = ++importFile.sequence;
   showDialog("导入阅读材料", '<p class="quiet">正在提取正文…</p>');
   const data = await api("/api/extract/" + kind, file, true);
@@ -186,10 +258,14 @@ function report(e) {
   else notify(e.message);
 }
 $("#file").addEventListener("change", e => {
-  const file = e.target.files[0]; e.target.value = "";
-  if (file) importFile(file).catch(report);
+  const files = Array.from(e.target.files); e.target.value = "";
+  importFiles(files);
 });
-document.addEventListener("pointerdown", e => { if (!pop.contains(e.target)) closePop(); });
+document.addEventListener("pointerdown", e => {
+  clearTimeout(sentenceClickTimer);
+  selectedInReader = false;
+  if (!pop.contains(e.target)) closePop();
+});
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") closePop();
   if (["Enter"," "].includes(e.key) && e.target.matches(".word.marked")) {
@@ -205,12 +281,13 @@ function selectedWord() {
   if (!sentence || !sentence.contains(range.endContainer)) return;
   const selected = selection.toString();
   const word = selected.trim();
+  selectedInReader = !!word;
   if (!/^[A-Za-z]+(?:['’\-][A-Za-z]+)*$/.test(word)) return;
   const prefix = document.createRange();
-  prefix.selectNodeContents(sentence);
+  prefix.selectNodeContents(sentence.querySelector(".sentence-text"));
   prefix.setEnd(range.startContainer, range.startOffset);
   const offset = prefix.toString().length + selected.indexOf(word);
-  const tokens = [...sentence.textContent.matchAll(pattern)];
+  const tokens = [...sentence.querySelector(".sentence-text").textContent.matchAll(pattern)];
   const tok = tokens.findIndex(m => m.index === offset && m[0] === word);
   if (tok < 0) return;
   selection.removeAllRanges();
@@ -219,6 +296,7 @@ function selectedWord() {
 main.addEventListener("mouseup", selectedWord);
 main.addEventListener("keyup", e => { if (e.key === "Shift") selectedWord(); });
 document.addEventListener("dblclick", e => {
+  clearTimeout(sentenceClickTimer);
   const word = e.target.closest(".prose .word");
   if (word) { getSelection().removeAllRanges(); choose(Number(word.closest(".sentence").dataset.sentence),Number(word.dataset.token)).catch(report); }
 });
@@ -234,12 +312,45 @@ document.addEventListener("click", async e => {
   const btn = e.target.closest("[data-action]");
   const marked = e.target.closest(".prose mark");
   if (!btn) {
-    if (marked) displayWord(Number(marked.closest(".sentence").dataset.sentence),Number(marked.dataset.token));
+    if (marked) {
+      displayWord(Number(marked.closest(".sentence").dataset.sentence),Number(marked.dataset.token));
+    } else {
+      const sentence = e.target.closest(".prose .sentence");
+      if (speechToggle.checked && sentence && !selectedInReader && getSelection().isCollapsed && e.detail < 2) {
+        sentenceClickTimer = setTimeout(() => {
+          readAloud(sentence.querySelector(".sentence-text").textContent, "原句", sentence);
+        }, 300);
+      }
+    }
     return;
   }
   const sid = Number(btn.dataset.sid), tok = Number(btn.dataset.tok);
   try {
     switch (btn.dataset.action) {
+      case "speak-reader-sentence": {
+        const sentence = btn.closest(".sentence");
+        readAloud(sentence.querySelector(".sentence-text").textContent, "原句", sentence);
+        break;
+      }
+      case "speak-sentence":
+        readAloud(btn.closest(".reviewcard").querySelector(".example").textContent, "原句");
+        break;
+      case "speak-word":
+        e.preventDefault();
+        readAloud(btn.dataset.word, btn.dataset.word);
+        break;
+      case "batch-stop":
+        batchImport.stopRequested = true;
+        btn.textContent = "正在停止…";
+        break;
+      case "batch-retry":
+        if (!batchImport.running) await runBatchImport(batchImport);
+        break;
+      case "batch-done":
+        dialog.close();
+        if (location.hash === "#library") await route();
+        else location.hash = "library";
+        break;
       case "reload": return route();
       case "import": return $("#file").click();
       case "close": return dialog.close();
@@ -296,6 +407,13 @@ document.addEventListener("click", async e => {
     }
   } catch (error) { report(error); } finally { btn.disabled = false; }
 });
-dialog.addEventListener("close", () => { if (!dialog.open) { importFile.sequence++; dialog.replaceChildren(); } });
+dialog.addEventListener("close", () => {
+  if (!dialog.open) {
+    importFile.sequence++;
+    if (batchImport?.running) batchImport.stopRequested = true;
+    else batchImport = null;
+    dialog.replaceChildren();
+  }
+});
 window.addEventListener("hashchange", route);
 route();

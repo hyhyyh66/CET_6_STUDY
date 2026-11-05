@@ -51,6 +51,9 @@ def setup():
             id INTEGER PRIMARY KEY, article INTEGER NOT NULL REFERENCES articles(id),
             para INTEGER NOT NULL, text TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS by_article ON sentences(article,id);
+        CREATE TABLE IF NOT EXISTS import_requests(
+            request_id TEXT PRIMARY KEY,
+            article INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE);
         CREATE TABLE IF NOT EXISTS marks(
             sentence INTEGER NOT NULL REFERENCES sentences(id), token INTEGER NOT NULL,
             word TEXT NOT NULL, lemma TEXT NOT NULL, phonetic TEXT NOT NULL, meaning TEXT NOT NULL,
@@ -171,6 +174,13 @@ def now():
 def write(db, path, body):
     db.execute("BEGIN IMMEDIATE")
     if path == "/api/articles":
+        request_id = body.get("requestId")
+        if request_id is not None:
+            if not isinstance(request_id, str) or not re.fullmatch(r"[a-zA-Z0-9-]{1,100}", request_id):
+                raise Problem("无效的导入请求。")
+            existing = db.execute("SELECT article FROM import_requests WHERE request_id=?", (request_id,)).fetchone()
+            if existing:
+                return {"id": existing[0]}
         title, kind, text = body.get("title"), body.get("kind"), body.get("text")
         if not isinstance(title, str) or not title.strip() or len(title) > 300 or kind not in ("txt", "pdf"):
             raise Problem("请填写有效的文章标题并选择文件。")
@@ -181,6 +191,8 @@ def write(db, path, body):
                    (aid, title.strip(), kind, now()))
         db.executemany("INSERT INTO sentences(article,para,text) VALUES(?,?,?)",
                        ((aid, p, s) for p, block in enumerate(paragraphs(text)) for s in split_sentences(block)))
+        if request_id is not None:
+            db.execute("INSERT INTO import_requests VALUES(?,?)", (request_id, aid))
         return {"id": aid}
     match = re.fullmatch(r"/api/articles/(\d+)/(mark|remove|edit|submit|delete)", path)
     if not match:
@@ -194,7 +206,7 @@ def write(db, path, body):
         db.execute("DELETE FROM sentences WHERE article=?", (aid,))
         db.execute("DELETE FROM articles WHERE id=?", (aid,))
         return {"id": aid}
-    if doc["state"] != "draft" or body.get("version") != doc["version"]:
+    if body.get("version") != doc["version"]:
         raise Problem("笔记已更新，请重新打开文章后操作。", 409)
     if action == "submit":
         db.execute("UPDATE articles SET state='submitted' WHERE id=?", (aid,))
@@ -255,7 +267,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/health":
                 return self.send({"app": "cet6-reading-notebook", "project": str(ROOT), "data": str(DATA)})
             files = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
-                     "/style.css": ("style.css", "text/css")}
+                     "/style.css": ("style.css", "text/css"), "/speech.js": ("speech.js", "text/javascript")}
             if path in files:
                 name, mime = files[path]
                 return self.send((ROOT / "web" / name).read_bytes(), mime)

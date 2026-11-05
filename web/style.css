@@ -8,3 +8,27 @@
 .vocab-card summary{cursor:pointer;color:var(--green);font:600 21px Georgia,serif;overflow-wrap:anywhere}
 .vocab-definitions p{margin-top:10px;white-space:pre-line;overflow-wrap:anywhere;font-size:15px;line-height:1.7}
 @media(max-width:400px){.bar{padding:0 10px;gap:12px}.bar nav{gap:10px}.bar nav a{white-space:nowrap}}
+
+.speech-bar{max-width:1116px;margin:20px auto 0;padding:14px 18px;border:1px solid var(--line);border-radius:10px;background:var(--paper);display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:13px}
+.speech-bar label{display:flex;align-items:center;gap:7px}.speech-bar select{max-width:260px;min-width:70px}.speech-bar #speech-status{color:var(--muted);flex-basis:100%;overflow-wrap:anywhere}
+.vocab-card summary .minor{margin-left:14px;font-family:"Segoe UI","Microsoft YaHei",sans-serif}
+.reader-head>.soft{flex-shrink:0}.cardfoot{flex-wrap:wrap}
+@media(max-width:780px){.speech-bar{margin:16px 16px 0}.speech-bar select{max-width:200px}.speech-bar label{flex-wrap:wrap}}
+
+.prose .sentence-text{cursor:pointer}.prose .sentence-text:hover{background:#eef1e5}
+.speaking-sentence .sentence-text{background:#dce9cc;box-shadow:0 2px #72905a}
+.sentence-play{display:inline-block;border:0;background:none;color:var(--green);padding:0 5px;font-size:15px;vertical-align:middle;user-select:none}
+.sentence-play:hover{background:#e6eddc;border-radius:4px}
+
+.speech-switch{cursor:pointer;white-space:nowrap}
+.speech-switch input{appearance:none;width:34px;height:20px;border:1px solid #8b998e;border-radius:12px;background:#d4dbd2;position:relative;cursor:pointer;margin:0}
+.speech-switch input::after{content:"";position:absolute;width:14px;height:14px;top:2px;left:2px;border-radius:50%;background:white}
+.speech-switch input:checked{background:var(--green);border-color:var(--green)}
+.speech-switch input:checked::after{left:16px}
+.speech-off [data-action^="speak-"],.speech-off .speech-hint{display:none}
+.speech-off .prose .sentence-text{cursor:text}
+.speech-off .prose .sentence-text:hover{background:transparent}
+
+#batch-list{list-style:none;padding:0;margin:14px 0}
+#batch-list li{padding:12px 0;border-bottom:1px solid var(--line);display:grid;gap:4px;overflow-wrap:anywhere}
+#batch-list strong{font-size:14px}#batch-summary{margin-top:12px;font-size:14px}
