@@ -1,7 +1,19 @@
-// Shared controls for article, sentence and vocabulary playback.
-const speech = window.speechSynthesis;
-let speechVoices = [], speechRun = 0, speechQueue = [], speechIndex = 0;
-let speechCurrent = null, speechPaused = false, speechLabel = "";
+// Edge TTS generates each selected sentence or word through the local server.
+let speechVoices = [], speechRun = 0, speechVoiceRequest = 0;
+let speechAudio = null, speechController = null, speechObjectUrl = null;
+let speechLabel = "";
+let speechRepeatTimer = null, speechRepeatCurrent = 1, speechRepeatTotal = 1;
+let speechGapRemaining = 0, speechGapStarted = 0, speechGapPaused = false;
+const speechRepeat = document.querySelector("#speech-repeat");
+const speechRepeatCount = document.querySelector("#speech-repeat-count");
+const speechRepeatGap = document.querySelector("#speech-repeat-gap");
+speechRepeat.checked = localStorage.getItem("speech-repeat") === "true";
+document.body.classList.toggle("repeat-off", !speechRepeat.checked);
+for (const control of [speechRepeatCount, speechRepeatGap]) {
+  const saved = localStorage.getItem(control.id);
+  if (Array.from(control.options).some(option => option.value === saved)) control.value = saved;
+}
+
 const speechBar = document.querySelector("#speech-bar");
 const speechVoice = document.querySelector("#speech-voice");
 const speechRate = document.querySelector("#speech-rate");
@@ -14,95 +26,172 @@ speechToggle.checked = localStorage.getItem("speech-enabled") !== "false";
 document.body.classList.toggle("speech-off", !speechToggle.checked);
 
 function updateSpeechControls(message) {
-  speechStatus.textContent = speechToggle.checked
-    ? message || (speechCurrent ? (speechPaused ? "已暂停 · " : "正在朗读 · ") + speechLabel : "选择朗读内容")
-    : "朗读已关闭";
+  let status = "点击句子或单词开始朗读";
+  if (speechController) status = "正在生成语音…";
+  if (speechAudio) status = (speechAudio.paused ? "已暂停 · " : "正在朗读 · ") + speechLabel;
+  if (speechAudio && speechRepeatTotal > 1) status += ` · 第 ${speechRepeatCurrent}/${speechRepeatTotal} 遍`;
+  if (speechRepeatTimer !== null || speechGapPaused) {
+    status = `${speechGapPaused ? "间隔已暂停" : "跟读间隔中"} · 下一遍 ${speechRepeatCurrent + 1}/${speechRepeatTotal}`;
+  }
+  speechRepeatCount.disabled = speechRepeatGap.disabled = !speechToggle.checked || !speechRepeat.checked;
+  speechStatus.textContent = speechToggle.checked ? message || status : "朗读已关闭";
   speechVoice.disabled = !speechToggle.checked || !speechVoices.length;
   speechRate.disabled = !speechToggle.checked;
   speechRefresh.disabled = !speechToggle.checked;
-  speechPause.disabled = !speechCurrent;
-  speechStop.disabled = !speechCurrent;
-  speechPause.textContent = speechPaused ? "继续" : "暂停";
+  speechPause.disabled = !speechAudio;
+  speechStop.disabled = !speechAudio && !speechController;
+  speechPause.textContent = speechGapPaused || (speechAudio?.paused && speechRepeatTimer === null) ? "继续" : "暂停";
 }
 function stopSpeech(message) {
-  document.querySelectorAll(".speaking-sentence").forEach(node => node.classList.remove("speaking-sentence"));
   speechRun++;
-  speechQueue = [];
-  speechCurrent = null;
-  speechPaused = false;
-  speech?.cancel();
+  clearTimeout(speechRepeatTimer);
+  speechRepeatTimer = null;
+  speechGapPaused = false;
+  speechController?.abort();
+  speechController = null;
+  if (speechAudio) {
+    speechAudio.pause();
+    speechAudio.removeAttribute("src");
+    speechAudio.load();
+    speechAudio = null;
+  }
+  if (speechObjectUrl) URL.revokeObjectURL(speechObjectUrl);
+  speechObjectUrl = null;
+  document.querySelectorAll(".speaking-sentence").forEach(node => node.classList.remove("speaking-sentence"));
   updateSpeechControls(message);
 }
-function loadSpeechVoices() {
-  if (!speech) {
-    updateSpeechControls("当前浏览器不支持朗读，请使用 Edge 或 Chrome。");
-    return;
+async function loadSpeechVoices() {
+  const request = ++speechVoiceRequest;
+  try {
+    const response = await fetch("/api/voices");
+    if (!response.ok) throw new Error("加载语音列表失败，请重启本地服务后点击「刷新语音」。");
+    const voices = await response.json();
+    if (request !== speechVoiceRequest) return;
+    const selected = speechVoice.value || localStorage.getItem("edge-tts-voice");
+    speechVoices = voices;
+    speechVoice.replaceChildren(...voices.map(voice => new Option(voice.name, voice.id)));
+    if (voices.some(voice => voice.id === selected)) speechVoice.value = selected;
+    updateSpeechControls();
+  } catch (error) {
+    if (request === speechVoiceRequest && !speechAudio && !speechController) {
+      updateSpeechControls(error.message || "无法连接本地服务，请确认服务已启动。");
+    }
   }
-  const selected = speechVoice.value || localStorage.getItem("speech-voice");
-  speechVoices = speech.getVoices().filter(voice => /^en(?:[-_]|$)/i.test(voice.lang) && voice.localService);
-  speechVoice.replaceChildren(...speechVoices.map(voice => new Option(voice.name + " · " + voice.lang, voice.voiceURI)));
-  speechVoice.disabled = !speechToggle.checked || !speechVoices.length;
-  if (speechVoices.some(voice => voice.voiceURI === selected)) speechVoice.value = selected;
-  if (!speechCurrent) updateSpeechControls(speechVoices.length ? "" : "浏览器尚未提供本机英语语音。若已安装，请完整退出浏览器（包括后台进程）后重开，再点击「刷新语音」；也可重启电脑。");
 }
 function speechView(visible) {
   stopSpeech();
   speechBar.hidden = !visible;
-  loadSpeechVoices();
+  if (visible && !speechVoices.length) loadSpeechVoices();
 }
-function playSpeechPart(run) {
-  if (run !== speechRun) return;
-  if (speechIndex >= speechQueue.length) {
-    stopSpeech("朗读完毕");
-    return;
-  }
-  const utterance = new SpeechSynthesisUtterance(speechQueue[speechIndex]);
-  utterance.voice = speechVoices.find(voice => voice.voiceURI === speechVoice.value) || speechVoices[0];
-  utterance.lang = utterance.voice.lang;
-  utterance.rate = Number(speechRate.value);
-  speechCurrent = utterance;
-  utterance.onstart = () => {
-    if (run === speechRun) updateSpeechControls();
-  };
-  utterance.onend = () => {
-    if (run !== speechRun) return;
-    speechIndex++;
-    playSpeechPart(run);
-  };
-  utterance.onerror = event => {
-    if (run === speechRun) stopSpeech("朗读失败，请重新选择语音后重试（" + event.error + "）。");
-  };
-  speech.speak(utterance);
+function scheduleSpeechRepeat(run) {
+  speechGapStarted = performance.now();
+  speechGapPaused = false;
+  speechRepeatTimer = setTimeout(async () => {
+    speechRepeatTimer = null;
+    if (run !== speechRun || !speechAudio) return;
+    speechRepeatCurrent++;
+    speechAudio.currentTime = 0;
+    try {
+      await speechAudio.play();
+      if (run === speechRun) updateSpeechControls();
+    } catch (error) {
+      if (run === speechRun && error.name !== "AbortError") stopSpeech("循环播放失败，请重新点击句子。");
+    }
+  }, speechGapRemaining);
   updateSpeechControls();
 }
-function readAloud(text, label, sentence) {
+async function readAloud(text, label, sentence, repeatable = false) {
   if (!speechToggle.checked) return;
   stopSpeech();
-  loadSpeechVoices();
-  if (!speech || !speechVoices.length) return;
-  // Short utterances also keep long imported passages within engine limits.
-  speechQueue = text.trim().match(/[\s\S]{1,200}(?:\s+|$)|\S{1,200}/g) || [];
-  sentence?.classList.add("speaking-sentence");
-  speechIndex = 0;
+  const run = speechRun;
+  if (!speechVoices.length) {
+    updateSpeechControls("语音列表尚未就绪，请点击「刷新语音」后重试。");
+    return;
+  }
+  speechController = new AbortController();
+  const timer = setTimeout(() => {
+    if (run === speechRun) stopSpeech("生成语音超时，请检查网络后重试。");
+  }, 55000);
   speechLabel = label;
-  playSpeechPart(speechRun);
-}
-speechPause.addEventListener("click", () => {
-  if (!speechCurrent) return;
-  speechPaused = !speechPaused;
-  if (speechPaused) speech.pause();
-  else speech.resume();
+  speechRepeatCurrent = 1;
+  speechRepeatTotal = repeatable && speechRepeat.checked ? Number(speechRepeatCount.value) : 1;
+  sentence?.classList.add("speaking-sentence");
   updateSpeechControls();
+  try {
+    const response = await fetch("/api/speech", {
+      method:"POST",
+      headers:{"X-Notebook":"1", "Content-Type":"application/json"},
+      body:JSON.stringify({text, voice:speechVoice.value, rate:speechRate.value}),
+      signal:speechController.signal
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || "生成语音失败，请稍后重试。");
+    }
+    const blob = await response.blob();
+    if (run !== speechRun) return;
+    clearTimeout(timer);
+    speechController = null;
+    speechObjectUrl = URL.createObjectURL(blob);
+    const player = new Audio(speechObjectUrl);
+    speechAudio = player;
+    player.onended = () => {
+      if (run !== speechRun) return;
+      if (speechRepeatCurrent >= speechRepeatTotal) {
+        stopSpeech("朗读完毕");
+        return;
+      }
+      speechGapRemaining = Number(speechRepeatGap.value) * 1000;
+      scheduleSpeechRepeat(run);
+    };
+    player.onerror = () => { if (run === speechRun) stopSpeech("音频播放失败，请重新点击句子。"); };
+    player.onplay = player.onpause = () => { if (run === speechRun) updateSpeechControls(); };
+    await player.play();
+    if (run === speechRun) updateSpeechControls();
+  } catch (error) {
+    // Pausing while play() is still starting rejects that promise normally.
+    if (error.name === "AbortError") return;
+    if (run === speechRun) {
+      const message = error.name === "NotAllowedError"
+        ? "浏览器阻止了播放，请允许此页面播放声音后重试。"
+        : error.message || "无法连接语音服务，请检查网络后重试。";
+      stopSpeech(message);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+speechPause.addEventListener("click", async () => {
+  if (!speechAudio) return;
+  const run = speechRun;
+  if (speechRepeatTimer !== null) {
+    clearTimeout(speechRepeatTimer);
+    speechRepeatTimer = null;
+    speechGapRemaining = Math.max(0, speechGapRemaining - (performance.now() - speechGapStarted));
+    speechGapPaused = true;
+    updateSpeechControls();
+    return;
+  }
+  if (speechGapPaused) {
+    scheduleSpeechRepeat(run);
+    return;
+  }
+  try {
+    if (speechAudio.paused) await speechAudio.play();
+    else speechAudio.pause();
+    if (run === speechRun) updateSpeechControls();
+  } catch (error) {
+    if (run === speechRun && error.name !== "AbortError") stopSpeech("恢复播放失败，请重新点击句子。");
+  }
 });
 speechStop.addEventListener("click", () => stopSpeech("已停止"));
 speechToggle.addEventListener("change", () => {
   localStorage.setItem("speech-enabled", String(speechToggle.checked));
   document.body.classList.toggle("speech-off", !speechToggle.checked);
   stopSpeech();
-  loadSpeechVoices();
 });
 speechVoice.addEventListener("change", () => {
-  localStorage.setItem("speech-voice", speechVoice.value);
+  localStorage.setItem("edge-tts-voice", speechVoice.value);
   stopSpeech("语音已更新，请重新点击朗读。");
 });
 speechRate.addEventListener("change", () => {
@@ -111,8 +200,13 @@ speechRate.addEventListener("change", () => {
 });
 const savedRate = localStorage.getItem("speech-rate");
 if (Array.from(speechRate.options).some(option => option.value === savedRate)) speechRate.value = savedRate;
-speech?.addEventListener("voiceschanged", loadSpeechVoices);
-document.querySelector("#speech-refresh").addEventListener("click", loadSpeechVoices);
-window.addEventListener("focus", loadSpeechVoices);
+for (const control of [speechRepeat, speechRepeatCount, speechRepeatGap]) {
+  control.addEventListener("change", () => {
+    localStorage.setItem(control.id, control === speechRepeat ? String(control.checked) : control.value);
+    document.body.classList.toggle("repeat-off", !speechRepeat.checked);
+    stopSpeech("循环设置已更新，请重新点击句子。");
+  });
+}
+speechRefresh.addEventListener("click", loadSpeechVoices);
 window.addEventListener("pagehide", () => stopSpeech());
 loadSpeechVoices();

@@ -7,6 +7,76 @@ let doc = null, review = [], marksBySentence = new Map(), generation = 0;
 let changing = false, activeWord = null, toastTimer;
 let sentenceClickTimer, selectedInReader = false;
 let batchImport = null;
+const translationToggle = $("#translation-enabled");
+const translationCache = new Map(), translationRequests = new Map();
+translationToggle.checked = localStorage.getItem("translation-enabled") === "true";
+document.body.classList.toggle("translation-off", !translationToggle.checked);
+function translationHtml() {
+  return '<button class="minor translation-button" data-action="translate-sentence" aria-expanded="false">看翻译</button><span class="sentence-translation" role="status" hidden></span>';
+}
+function stopTranslations() {
+  for (const controller of translationRequests.values()) controller.abort();
+  translationRequests.clear();
+}
+async function translateSentence(button) {
+  if (!translationToggle.checked) return;
+  const container = button.closest(".sentence, .reviewcard");
+  const output = container.querySelector(".sentence-translation");
+  if (!output.hidden && output.dataset.failed !== "true") {
+    translationRequests.get(button)?.abort();
+    translationRequests.delete(button);
+    output.hidden = true;
+    button.textContent = "看翻译";
+    button.setAttribute("aria-expanded", "false");
+    return;
+  }
+  const text = container.querySelector(".sentence-text, .example").textContent;
+  const controller = new AbortController();
+  translationRequests.set(button, controller);
+  output.hidden = false;
+  delete output.dataset.failed;
+  output.textContent = "正在翻译…";
+  button.textContent = "收起翻译";
+  button.setAttribute("aria-expanded", "true");
+  const timer = setTimeout(() => controller.abort("timeout"), 45000);
+  try {
+    let translated = translationCache.get(text);
+    if (!translated) {
+      const response = await fetch("/api/translate", {
+        method:"POST", headers:{"X-Notebook":"1","Content-Type":"application/json"},
+        body:JSON.stringify({text}), signal:controller.signal
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "翻译失败，请重试。");
+      translated = result.translation;
+      if (typeof translated !== "string" || !translated.trim()) throw new Error("没有获取到译文，请重试。");
+      if (translationCache.size >= 512) translationCache.delete(translationCache.keys().next().value);
+      translationCache.set(text, translated);
+    }
+    if (controller.signal.aborted || !button.isConnected || !translationToggle.checked) return;
+    output.textContent = translated;
+  } catch (error) {
+    if (!button.isConnected || !translationToggle.checked || translationRequests.get(button) !== controller) return;
+    output.dataset.failed = "true";
+    output.textContent = controller.signal.reason === "timeout" ? "翻译超时，请重试。" : error.message || "翻译失败，请检查网络。";
+    button.textContent = "重试翻译";
+  } finally {
+    clearTimeout(timer);
+    if (translationRequests.get(button) === controller) translationRequests.delete(button);
+  }
+}
+translationToggle.addEventListener("change", () => {
+  localStorage.setItem("translation-enabled", String(translationToggle.checked));
+  document.body.classList.toggle("translation-off", !translationToggle.checked);
+  if (!translationToggle.checked) {
+    stopTranslations();
+    for (const output of document.querySelectorAll(".sentence-translation")) output.hidden = true;
+    for (const button of document.querySelectorAll(".translation-button")) {
+      button.textContent = "看翻译";
+      button.setAttribute("aria-expanded", "false");
+    }
+  }
+});
 const empty = (title, description) => `<div class="empty"><h3>${title}</h3><p class="quiet">${description}</p></div>`;
 const hint = "词典暂未收录，可手动填写释义。";
 function notify(message) {
@@ -45,7 +115,7 @@ function words(text, marks, interactive = false) {
   return html + esc(text.slice(end));
 }
 function sentenceHtml(s) {
-  return `<span class="sentence" id="s-${s.id}" data-sentence="${s.id}"><span class="sentence-text">${words(s.text, marksBySentence.get(s.id) || [], true)}</span><button class="sentence-play" data-action="speak-reader-sentence" aria-label="朗读这句">▷</button></span>`;
+  return `<span class="sentence" id="s-${s.id}" data-sentence="${s.id}"><span class="sentence-text">${words(s.text, marksBySentence.get(s.id) || [], true)}</span><button class="sentence-play" data-action="speak-reader-sentence" aria-label="朗读这句">▷</button>${translationHtml()}</span>`;
 }
 function library(items) {
   main.innerHTML = `<section class="hero"><div><h1>我的阅读书桌</h1><p>从一篇英语阅读开始，把遇到的生词留在原句里。</p><button class="primary" data-action="import">＋ 导入阅读材料</button></div><div class="books" aria-hidden="true"><b></b><b></b><b></b><b></b></div></section>
@@ -66,7 +136,7 @@ function sidebar() {
   $("#notes").innerHTML = `<div class="row"><h2>${draft ? "划词笔记" : "文章笔记"}</h2><span class="state">${doc.marks.length} 处</span></div><p class="quiet">${draft ? "选中或双击英文单词查看释义。划词和释义修改自动保存，标记可随时移除。" : "可继续划词、编辑释义或移除标记。修改自动保存并同步到原句复习和生词复习。"}</p><div class="sidewords">${doc.marks.map(m => `<button class="sideword" data-action="locate" data-sid="${m.sentence}" data-tok="${m.token}"><strong>${esc(m.word)}</strong><small>${esc(m.meaning || hint)}</small></button>`).join("")}</div>${draft ? '<button class="primary" data-action="preview">提交学习笔记</button>' : '<button class="primary" data-action="review">查看原句复习</button>'}`;
 }
 function reviewCard(s, list, preview = false) {
-  return `<section class="reviewcard"><p class="example">${words(s.text, list)}</p><div class="defs">${list.map(m => `<div class="def"><strong>${esc(m.word)}</strong><span class="meaning">${esc(m.meaning || "暂未填写释义")}</span>${preview ? `<button class="link" data-action="drop" data-sid="${s.id}" data-tok="${m.token}">移除</button>` : ""}</div>`).join("")}</div>${preview ? "" : `<div class="cardfoot"><span>${esc(s.title)}</span><button class="minor" data-action="speak-sentence">朗读原句</button><a href="#article/${s.article}/${s.id}">回到原文 ↗</a></div>`}</section>`;
+  return `<section class="reviewcard"><p class="example">${words(s.text, list)}</p>${preview ? "" : translationHtml()}<div class="defs">${list.map(m => `<div class="def"><strong>${esc(m.word)}</strong><span class="meaning">${esc(m.meaning || "暂未填写释义")}</span>${preview ? `<button class="link" data-action="drop" data-sid="${s.id}" data-tok="${m.token}">移除</button>` : ""}</div>`).join("")}</div>${preview ? "" : `<div class="cardfoot"><span>${esc(s.title)}</span><button class="minor" data-action="speak-sentence">朗读原句</button><a href="#article/${s.article}/${s.id}">回到原文 ↗</a></div>`}</section>`;
 }
 function reviewPage(initial) {
   const articles = new Map(review.map(s => [s.article,s.title]));
@@ -138,6 +208,7 @@ function preview() {
 }
 async function route() {
   const ticket = ++generation;
+  stopTranslations();
   clearTimeout(sentenceClickTimer);
   speechView(false);
   doc = null; closePop(); if (dialog.open) dialog.close();
@@ -277,7 +348,7 @@ function selectedWord() {
   if (!selection.rangeCount || selection.isCollapsed || !doc || dialog.open) return;
   const range = selection.getRangeAt(0);
   const parent = node => node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
-  const sentence = parent(range.startContainer).closest(".sentence");
+  const sentence = parent(range.startContainer).closest(".sentence-text")?.closest(".sentence");
   if (!sentence || !sentence.contains(range.endContainer)) return;
   const selected = selection.toString();
   const word = selected.trim();
@@ -315,10 +386,10 @@ document.addEventListener("click", async e => {
     if (marked) {
       displayWord(Number(marked.closest(".sentence").dataset.sentence),Number(marked.dataset.token));
     } else {
-      const sentence = e.target.closest(".prose .sentence");
+      const sentence = e.target.closest(".prose .sentence-text")?.closest(".sentence");
       if (speechToggle.checked && sentence && !selectedInReader && getSelection().isCollapsed && e.detail < 2) {
         sentenceClickTimer = setTimeout(() => {
-          readAloud(sentence.querySelector(".sentence-text").textContent, "原句", sentence);
+          readAloud(sentence.querySelector(".sentence-text").textContent, "原句", sentence, true);
         }, 300);
       }
     }
@@ -327,13 +398,16 @@ document.addEventListener("click", async e => {
   const sid = Number(btn.dataset.sid), tok = Number(btn.dataset.tok);
   try {
     switch (btn.dataset.action) {
+      case "translate-sentence":
+        await translateSentence(btn);
+        break;
       case "speak-reader-sentence": {
         const sentence = btn.closest(".sentence");
-        readAloud(sentence.querySelector(".sentence-text").textContent, "原句", sentence);
+        readAloud(sentence.querySelector(".sentence-text").textContent, "原句", sentence, true);
         break;
       }
       case "speak-sentence":
-        readAloud(btn.closest(".reviewcard").querySelector(".example").textContent, "原句");
+        readAloud(btn.closest(".reviewcard").querySelector(".example").textContent, "原句", null, true);
         break;
       case "speak-word":
         e.preventDefault();

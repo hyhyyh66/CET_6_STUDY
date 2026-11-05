@@ -32,3 +32,11 @@
 #batch-list{list-style:none;padding:0;margin:14px 0}
 #batch-list li{padding:12px 0;border-bottom:1px solid var(--line);display:grid;gap:4px;overflow-wrap:anywhere}
 #batch-list strong{font-size:14px}#batch-summary{margin-top:12px;font-size:14px}
+
+.speech-network{flex-basis:100%;color:var(--muted);font-size:12px}
+
+.repeat-off .repeat-options,.translation-off .translation-button,.translation-off .sentence-translation,.translation-off .translation-network{display:none!important}
+.sentence-translation{display:block;padding:10px 14px;margin:8px 0 14px;border-left:3px solid #acc2a0;background:#edf1e7;border-radius:4px;color:#374c3e;font:15px/1.8 "Segoe UI","Microsoft YaHei",sans-serif;white-space:pre-wrap;overflow-wrap:anywhere}
+.sentence-translation[data-failed="true"]{color:#914734}
+.translation-button{font-family:"Segoe UI","Microsoft YaHei",sans-serif;vertical-align:middle;user-select:none}
+.translation-network{flex-basis:100%;color:var(--muted);font-size:12px}

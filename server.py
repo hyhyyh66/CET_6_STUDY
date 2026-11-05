@@ -1,10 +1,13 @@
 """Local CET-6 reading notebook. Run with the included Windows Python runtime."""
 import argparse
+import asyncio
 from contextlib import closing
 from datetime import datetime
+from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 import json
+import html
 import os
 from pathlib import Path
 import re
@@ -12,7 +15,8 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
-from urllib.parse import urlsplit
+import time
+from urllib.parse import urlsplit, urlencode
 from urllib.request import urlopen
 import webbrowser
 
@@ -22,12 +26,79 @@ DICT = ROOT / "assets" / "dictionary.sqlite"
 WORD = re.compile(r"[A-Za-z]+(?:['’\-][A-Za-z]+)*")
 LIMIT = 20 * 1024 * 1024
 MAX_TEXT = 1000000
+SPEECH_VOICES = {
+    "en-US-AriaNeural": "Aria · 美式女声",
+    "en-US-GuyNeural": "Guy · 美式男声",
+    "en-GB-SoniaNeural": "Sonia · 英式女声",
+    "en-GB-RyanNeural": "Ryan · 英式男声",
+}
+SPEECH_RATES = {"0.7": "-30%", "0.85": "-15%", "1": "+0%", "1.2": "+20%"}
+
+
+@lru_cache(maxsize=64)
+def speech_audio(text, voice, rate):
+    async def generate():
+        import edge_tts
+        audio = bytearray()
+        stream = edge_tts.Communicate(text, voice, rate=rate, connect_timeout=10, receive_timeout=20)
+        async with asyncio.timeout(45):
+            async for chunk in stream.stream():
+                if chunk["type"] == "audio":
+                    audio.extend(chunk["data"])
+        if not audio:
+            raise RuntimeError("Empty speech audio")
+        return bytes(audio)
+
+    try:
+        return asyncio.run(generate())
+    except TimeoutError as exc:
+        raise Problem("Edge TTS 响应超时，请检查网络后重试。", 504) from exc
+    except Exception as exc:
+        raise Problem("Edge TTS 暂时无法生成语音，请检查网络或稍后重试。", 502) from exc
 
 
 class Problem(Exception):
     def __init__(self, message, status=400):
         self.status = status
         super().__init__(message)
+
+
+@lru_cache(maxsize=512)
+def translate_sentence(text):
+    # MyMemory accepts at most 500 UTF-8 bytes per request.
+    segments = []
+    while len(text.encode("utf-8")) > 500:
+        end = len(text.encode("utf-8")[:500].decode("utf-8", errors="ignore"))
+        boundary = max(text.rfind(separator, 0, end) for separator in " ,;:")
+        if boundary > end // 2:
+            end = boundary + 1
+        segments.append(text[:end].strip())
+        text = text[end:].lstrip()
+    segments.append(text)
+    translated = []
+    deadline = time.monotonic() + 40
+    try:
+        for segment in segments:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError()
+            url = "https://api.mymemory.translated.net/get?" + urlencode({"q": segment, "langpair": "en|zh-CN"})
+            with urlopen(url, timeout=min(15, remaining)) as response:
+                result = json.load(response)
+            status = str(result.get("responseStatus"))
+            if result.get("quotaFinished") or status in ("403", "429"):
+                raise Problem("MyMemory 翻译额度已用完或请求受限，请稍后再试。", 429)
+            translation = result.get("responseData", {}).get("translatedText")
+            if status != "200" or not isinstance(translation, str) or not translation.strip():
+                raise Problem("MyMemory 暂时无法翻译这句话，请稍后重试。", 502)
+            translated.append(html.unescape(translation))
+        return "".join(translated)
+    except Problem:
+        raise
+    except TimeoutError as exc:
+        raise Problem("翻译超时，请检查网络后重试。", 504) from exc
+    except Exception as exc:
+        raise Problem("无法连接 MyMemory 翻译服务，请检查网络后重试。", 502) from exc
 
 
 def connect():
@@ -261,11 +332,33 @@ class Handler(BaseHTTPRequestHandler):
                 data = self.rfile.read(size)
                 if path.startswith("/api/extract/"):
                     return self.send({"text": extract(path.split("/")[-1], data)})
+                if path == "/api/translate":
+                    body = json.loads(data)
+                    if not isinstance(body, dict):
+                        raise Problem("无效的翻译请求。")
+                    text = body.get("text")
+                    if not isinstance(text, str) or not 0 < len(text.strip()) <= 5000:
+                        raise Problem("每次请选择 1 到 5000 字符的句子。")
+                    return self.send({"translation": translate_sentence(text.strip()), "provider": "MyMemory"})
+                if path == "/api/speech":
+                    body = json.loads(data)
+                    if not isinstance(body, dict):
+                        raise Problem("无效的朗读请求。")
+                    text, voice, rate = body.get("text"), body.get("voice"), body.get("rate")
+                    if not isinstance(text, str) or not 0 < len(text.strip()) <= 5000:
+                        raise Problem("每次请选择 1 到 5000 字符的句子或单词。")
+                    if not isinstance(voice, str) or voice not in SPEECH_VOICES:
+                        raise Problem("请选择可用的 Edge TTS 英语语音。")
+                    if not isinstance(rate, str) or rate not in SPEECH_RATES:
+                        raise Problem("请选择可用的朗读语速。")
+                    return self.send(speech_audio(text.strip(), voice, SPEECH_RATES[rate]), "audio/mpeg")
                 with closing(connect()) as db, db:
                     result = write(db, path, json.loads(data))
                 return self.send(result)
             if path == "/api/health":
                 return self.send({"app": "cet6-reading-notebook", "project": str(ROOT), "data": str(DATA)})
+            if path == "/api/voices":
+                return self.send([{"id": key, "name": value} for key, value in SPEECH_VOICES.items()])
             files = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
                      "/style.css": ("style.css", "text/css"), "/speech.js": ("speech.js", "text/javascript")}
             if path in files:

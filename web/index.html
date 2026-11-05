@@ -7,6 +7,10 @@
 <label>英语语音 <select id="speech-voice" aria-label="英语语音"></select></label>
 <button class="soft" id="speech-refresh">刷新语音</button>
 <label>语速 <select id="speech-rate" aria-label="朗读语速"><option value="0.7">0.7 倍</option><option value="0.85">0.85 倍</option><option value="1" selected>1 倍</option><option value="1.2">1.2 倍</option></select></label>
+<label class="speech-switch"><input id="speech-repeat" type="checkbox" role="switch">单句循环</label>
+<label class="repeat-options">总次数 <select id="speech-repeat-count" aria-label="循环总次数"><option value="2">2 遍</option><option value="3" selected>3 遍</option><option value="5">5 遍</option></select></label>
+<label class="repeat-options">间隔 <select id="speech-repeat-gap" aria-label="循环间隔"><option value="0">0 秒</option><option value="2" selected>2 秒</option><option value="5">5 秒</option></select></label>
+<label class="speech-switch"><input id="translation-enabled" type="checkbox" role="switch">句子翻译</label>
 <button class="soft" id="speech-pause" disabled>暂停</button><button class="soft" id="speech-stop" disabled>停止</button>
-<span id="speech-status" role="status"></span></section>
+<span class="speech-network">Edge TTS · 联网朗读，所选句子或单词会发送至微软语音服务</span><span class="translation-network">MyMemory · 点击「看翻译」时发送所选英文，机器翻译供理解参考，每日免费额度有限</span><span id="speech-status" role="status"></span></section>
 <main id="main"></main><input type="file" id="file" accept=".txt,.pdf" multiple hidden><dialog id="dialog"></dialog><div id="popover" hidden></div><div id="toast" role="status" hidden></div></body></html>
