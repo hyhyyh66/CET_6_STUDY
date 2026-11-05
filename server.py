@@ -44,6 +44,9 @@ def setup():
         CREATE TABLE IF NOT EXISTS articles(
             id INTEGER PRIMARY KEY, title TEXT NOT NULL, kind TEXT NOT NULL,
             state TEXT NOT NULL DEFAULT 'draft', updated TEXT NOT NULL, version INTEGER DEFAULT 0);
+        -- Old article links and requests must never point at a later import.
+        CREATE TABLE IF NOT EXISTS article_sequence(singleton INTEGER PRIMARY KEY CHECK(singleton=1), last_id INTEGER NOT NULL);
+        INSERT OR IGNORE INTO article_sequence SELECT 1, COALESCE(MAX(id), 0) FROM articles;
         CREATE TABLE IF NOT EXISTS sentences(
             id INTEGER PRIMARY KEY, article INTEGER NOT NULL REFERENCES articles(id),
             para INTEGER NOT NULL, text TEXT NOT NULL);
@@ -173,16 +176,24 @@ def write(db, path, body):
             raise Problem("请填写有效的文章标题并选择文件。")
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
             raise Problem("正文需要包含 1 到 100 万个字符。")
-        aid = db.execute("INSERT INTO articles(title,kind,updated) VALUES(?,?,?)",
-                         (title.strip(), kind, now())).lastrowid
+        aid = db.execute("UPDATE article_sequence SET last_id=last_id+1 RETURNING last_id").fetchone()[0]
+        db.execute("INSERT INTO articles(id,title,kind,updated) VALUES(?,?,?,?)",
+                   (aid, title.strip(), kind, now()))
         db.executemany("INSERT INTO sentences(article,para,text) VALUES(?,?,?)",
                        ((aid, p, s) for p, block in enumerate(paragraphs(text)) for s in split_sentences(block)))
         return {"id": aid}
-    match = re.fullmatch(r"/api/articles/(\d+)/(mark|remove|edit|submit)", path)
+    match = re.fullmatch(r"/api/articles/(\d+)/(mark|remove|edit|submit|delete)", path)
     if not match:
         raise Problem("找不到请求的操作。", 404)
     aid, action = int(match[1]), match[2]
     doc = article(db, aid)
+    if action == "delete":
+        if body.get("version") != doc["version"]:
+            raise Problem("这篇材料已有更新，请刷新书桌后再删除。", 409)
+        db.execute("DELETE FROM marks WHERE sentence IN (SELECT id FROM sentences WHERE article=?)", (aid,))
+        db.execute("DELETE FROM sentences WHERE article=?", (aid,))
+        db.execute("DELETE FROM articles WHERE id=?", (aid,))
+        return {"id": aid}
     if doc["state"] != "draft" or body.get("version") != doc["version"]:
         raise Problem("笔记已更新，请重新打开文章后操作。", 409)
     if action == "submit":

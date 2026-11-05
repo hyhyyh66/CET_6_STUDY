@@ -48,7 +48,7 @@ function sentenceHtml(s) {
 function library(items) {
   main.innerHTML = `<section class="hero"><div><h1>我的阅读书桌</h1><p>从一篇英语阅读开始，把遇到的生词留在原句里。</p><button class="primary" data-action="import">＋ 导入阅读材料</button></div><div class="books" aria-hidden="true"><b></b><b></b><b></b><b></b></div></section>
   <div class="sectionhead"><h2>阅读材料</h2><span class="quiet">共 ${items.length} 篇</span></div>
-  ${items.length ? '<div class="list">' + items.map(a => `<a class="article-row" href="#article/${a.id}"><span class="filetype">${esc(a.kind.toUpperCase())}</span><div><strong>${esc(a.title)}</strong><div class="meta">${esc(a.updated.slice(0,10))} 更新 · ${a.count} 处标记</div></div><span class="state">${a.state === "draft" ? "学习中" : "已提交"}</span><span class="arrow">→</span></a>`).join("") + "</div>" : empty("书桌上还没有文章","导入 TXT 或可复制文字的 PDF，即可开始阅读。")}`;
+  ${items.length ? '<div class="list">' + items.map(a => `<div class="article-row"><a class="article-open" href="#article/${a.id}"><span class="filetype">${esc(a.kind.toUpperCase())}</span><div><strong>${esc(a.title)}</strong><div class="meta">${esc(a.updated.slice(0,10))} 更新 · ${a.count} 处标记</div></div><span class="state">${a.state === "draft" ? "学习中" : "已提交"}</span><span class="arrow">→</span></a><button class="minor delete-article" data-action="ask-delete" data-id="${a.id}" data-version="${a.version}" aria-label="删除《${esc(a.title)}》">删除</button></div>`).join("") + "</div>" : empty("书桌上还没有文章","导入 TXT 或可复制文字的 PDF，即可开始阅读。")}`;
 }
 function reader() {
   const groups = new Map();
@@ -71,6 +71,23 @@ function reviewPage(initial) {
   const filter = articles.has(initial) ? initial : 0;
   const filtered = review.filter(s => !filter || s.article === filter);
   main.innerHTML = `<div class="reviewhead"><div><h1>原句复习</h1><p class="quiet">${filtered.length} 个原句 · ${filtered.reduce((n,s) => n + s.marks.length, 0)} 处生词标记</p></div>${articles.size ? `<select aria-label="筛选文章来源" id="filter"><option value="0">全部文章</option>${[...articles].map(([id,title]) => `<option value="${id}" ${id === filter ? "selected" : ""}>${esc(title)}</option>`).join("")}</select>` : ""}</div>${filtered.length ? '<div class="cards">' + filtered.map(s => reviewCard(s,s.marks)).join("") + '</div>' : empty("还没有可复习的原句","在文章里划词并提交学习笔记后，带高亮的原句会出现在这里。")}`;
+}
+function vocabularyPage(sentences) {
+  const vocabulary = new Map();
+  for (const sentence of sentences) {
+    for (const mark of sentence.marks) {
+      const word = mark.word.toLowerCase().replaceAll("’", "'");
+      if (!vocabulary.has(word)) vocabulary.set(word, new Set());
+      const meaning = mark.meaning.trim();
+      if (meaning) vocabulary.get(word).add(meaning);
+    }
+  }
+  const cards = Array.from(vocabulary, ([word, meanings]) => {
+    const definitions = meanings.size ? Array.from(meanings, text => `<p>${esc(text)}</p>`).join("") : "<p>暂未填写释义</p>";
+    return `<details class="reviewcard vocab-card" open><summary lang="en">${esc(word)}</summary><div class="vocab-definitions">${definitions}</div></details>`;
+  });
+  main.innerHTML = `<div class="reviewhead"><div><h1>生词复习</h1><p class="quiet">共 ${cards.length} 个生词</p></div></div>` +
+    (cards.length ? `<div class="cards">${cards.join("")}</div>` : empty("还没有可复习的生词", "在文章里划词并提交学习笔记后，就可以在这里复习。"));
 }
 function closePop() { pop.hidden = true; activeWord = null; }
 function tokenNode(sid, tok) { return $(`#s-${sid} [data-token="${tok}"]`); }
@@ -115,7 +132,7 @@ async function choose(sid, tok) {
 function preview() {
   closePop();
   const marked = doc.sentences.filter(s => marksBySentence.has(s.id));
-  showDialog("提交学习笔记", `<p class="quiet">共 ${marked.length} 个原句，${doc.marks.length} 处标记。确认后将保存到文章笔记和原句复习。</p><div class="cards">${marked.map(s => reviewCard(s,marksBySentence.get(s.id),true)).join("")}</div>`,
+  showDialog("提交学习笔记", `<p class="quiet">共 ${marked.length} 个原句，${doc.marks.length} 处标记。确认后即可在「原句复习」和「生词复习」中查看。</p><div class="cards">${marked.map(s => reviewCard(s,marksBySentence.get(s.id),true)).join("")}</div>`,
     '<button class="soft" data-action="close">继续阅读</button><button class="primary" data-action="submit">确认提交</button>');
 }
 async function route() {
@@ -123,7 +140,9 @@ async function route() {
   doc = null; closePop(); if (dialog.open) dialog.close();
   const parts = location.hash.slice(1).split("/");
   const inReview = parts[0] === "review";
-  $("#nav-library").classList.toggle("active", !inReview);
+  const inVocabulary = parts[0] === "vocabulary";
+  $("#nav-vocabulary").classList.toggle("active", inVocabulary);
+  $("#nav-library").classList.toggle("active", !inReview && !inVocabulary);
   $("#nav-review").classList.toggle("active", inReview);
   try {
     if (parts[0] === "article" && /^\d+$/.test(parts[1])) {
@@ -133,10 +152,16 @@ async function route() {
       const target = /^\d+$/.test(parts[2]) && $("#s-"+parts[2]);
       if (target) { target.classList.add("focus-sentence"); target.scrollIntoView({block:"center"}); }
       else window.scrollTo(0, Number(localStorage.getItem("position-"+doc.id)) || 0);
-    } else if (inReview) {
+    } else if (inReview || inVocabulary) {
       const data = await api("/api/review");
       if (ticket !== generation) return;
-      review = data; reviewPage(Number(parts[1])); window.scrollTo(0,0);
+      if (inVocabulary) {
+        vocabularyPage(data);
+      } else {
+        review = data;
+        reviewPage(Number(parts[1]));
+      }
+      window.scrollTo(0,0);
     } else {
       const data = await api("/api/articles");
       if (ticket !== generation) return;
@@ -223,6 +248,22 @@ document.addEventListener("click", async e => {
         btn.disabled = true;
         const a = await api("/api/articles",{title:$("#title").value,text:$("#text").value,kind:btn.dataset.kind});
         dialog.close(); location.hash = "article/" + a.id; break;
+      }
+      case "ask-delete": {
+        const title = btn.closest(".article-row").querySelector("strong").textContent;
+        showDialog("删除阅读材料", `<p>确定删除《${esc(title)}》吗？这篇材料的划词笔记、复习原句和对应的生词记录也会删除。</p>`,
+          `<button class="soft" data-action="close">取消</button><button class="primary danger" data-action="delete-article" data-id="${btn.dataset.id}" data-version="${btn.dataset.version}">确认删除</button>`);
+        break;
+      }
+      case "delete-article": {
+        btn.disabled = true;
+        const id = btn.dataset.id;
+        await api(`/api/articles/${id}/delete`, {version:Number(btn.dataset.version)});
+        localStorage.removeItem("position-"+id);
+        dialog.close();
+        await route();
+        notify("阅读材料已删除");
+        break;
       }
       case "preview": return preview();
       case "drop":
