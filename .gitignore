@@ -6,6 +6,7 @@ __pycache__/
 *.pyc
 *.pyo
 .venv/
+/local-translation/
 
 # Temporary files from rebuilding the bundled offline dictionary
 /assets/dictionary.new

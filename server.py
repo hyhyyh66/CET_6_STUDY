@@ -17,10 +17,16 @@ import subprocess
 import tempfile
 import time
 from urllib.parse import urlsplit, urlencode
-from urllib.request import urlopen
+from urllib.request import urlopen, Request, build_opener, ProxyHandler
 import webbrowser
 
 ROOT = Path(__file__).resolve().parent
+LOCAL_TRANSLATION_URL = os.environ.get("CET6_TRANSLATION_URL", "").rstrip("/")
+TRANSLATION_PROVIDER = "LibreTranslate（本机）" if LOCAL_TRANSLATION_URL else "MyMemory"
+if LOCAL_TRANSLATION_URL:
+    local_url = urlsplit(LOCAL_TRANSLATION_URL)
+    if local_url.scheme != "http" or local_url.hostname != "127.0.0.1" or local_url.path or local_url.query or local_url.fragment:
+        raise SystemExit("CET6_TRANSLATION_URL must be http://127.0.0.1:PORT")
 DATA = Path(os.environ.get("CET6_DATA", ROOT / "data")) / "study.sqlite"
 DICT = ROOT / "assets" / "dictionary.sqlite"
 WORD = re.compile(r"[A-Za-z]+(?:['’\-][A-Za-z]+)*")
@@ -65,6 +71,22 @@ class Problem(Exception):
 
 @lru_cache(maxsize=512)
 def translate_sentence(text):
+    if LOCAL_TRANSLATION_URL:
+        request = Request(LOCAL_TRANSLATION_URL + "/translate",
+                          json.dumps({"q": text, "source": "en", "target": "zh", "format": "text"}).encode("utf-8"),
+                          {"Content-Type": "application/json"})
+        try:
+            # Never send localhost traffic through a system HTTP proxy.
+            with build_opener(ProxyHandler({})).open(request, timeout=40) as response:
+                result = json.load(response)
+            translation = result.get("translatedText")
+            if not isinstance(translation, str) or not translation.strip():
+                raise ValueError("Empty translation")
+            return translation
+        except TimeoutError as exc:
+            raise Problem("本机翻译超时，请稍后重试或尝试较短的句子。", 504) from exc
+        except Exception as exc:
+            raise Problem("本机翻译服务不可用，请重新运行「试用本地翻译.cmd」。", 502) from exc
     # MyMemory accepts at most 500 UTF-8 bytes per request.
     segments = []
     while len(text.encode("utf-8")) > 500:
@@ -339,7 +361,7 @@ class Handler(BaseHTTPRequestHandler):
                     text = body.get("text")
                     if not isinstance(text, str) or not 0 < len(text.strip()) <= 5000:
                         raise Problem("每次请选择 1 到 5000 字符的句子。")
-                    return self.send({"translation": translate_sentence(text.strip()), "provider": "MyMemory"})
+                    return self.send({"translation": translate_sentence(text.strip()), "provider": TRANSLATION_PROVIDER})
                 if path == "/api/speech":
                     body = json.loads(data)
                     if not isinstance(body, dict):
@@ -356,7 +378,11 @@ class Handler(BaseHTTPRequestHandler):
                     result = write(db, path, json.loads(data))
                 return self.send(result)
             if path == "/api/health":
-                return self.send({"app": "cet6-reading-notebook", "project": str(ROOT), "data": str(DATA)})
+                return self.send({"app": "cet6-reading-notebook", "project": str(ROOT), "data": str(DATA), "translation_url": LOCAL_TRANSLATION_URL})
+            if path == "/api/translation-config":
+                note = ("LibreTranslate · 本机英译中，句子不上传，机器翻译供理解参考" if LOCAL_TRANSLATION_URL
+                        else "MyMemory · 点击「看翻译」时发送所选英文，机器翻译供理解参考，每日免费额度有限")
+                return self.send({"provider": TRANSLATION_PROVIDER, "note": note})
             if path == "/api/voices":
                 return self.send([{"id": key, "name": value} for key, value in SPEECH_VOICES.items()])
             files = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
@@ -424,7 +450,8 @@ if __name__ == "__main__":
             try:
                 with urlopen(url + "/api/health", timeout=1) as response:
                     info = json.load(response)
-                if info.get("project") == str(ROOT) and info.get("data") == str(DATA):
+                if (info.get("project") == str(ROOT) and info.get("data") == str(DATA)
+                        and info.get("translation_url", "") == LOCAL_TRANSLATION_URL):
                     if args.open:
                         webbrowser.open(url)
                     raise SystemExit(0)

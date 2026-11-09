@@ -8,6 +8,11 @@ let changing = false, activeWord = null, toastTimer;
 let sentenceClickTimer, selectedInReader = false;
 let batchImport = null;
 const translationToggle = $("#translation-enabled");
+fetch("/api/translation-config").then(response => {
+  if (!response.ok) throw new Error("Translation configuration unavailable");
+  return response.json();
+}).then(config => { $(".translation-network").textContent = config.note; })
+  .catch(() => { $(".translation-network").textContent = "翻译服务信息暂不可用，请刷新页面。"; });
 const translationCache = new Map(), translationRequests = new Map();
 translationToggle.checked = localStorage.getItem("translation-enabled") === "true";
 document.body.classList.toggle("translation-off", !translationToggle.checked);
@@ -133,7 +138,8 @@ function reader() {
 }
 function sidebar() {
   const draft = doc.state === "draft";
-  $("#notes").innerHTML = `<div class="row"><h2>${draft ? "划词笔记" : "文章笔记"}</h2><span class="state">${doc.marks.length} 处</span></div><p class="quiet">${draft ? "选中或双击英文单词查看释义。划词和释义修改自动保存，标记可随时移除。" : "可继续划词、编辑释义或移除标记。修改自动保存并同步到原句复习和生词复习。"}</p><div class="sidewords">${doc.marks.map(m => `<button class="sideword" data-action="locate" data-sid="${m.sentence}" data-tok="${m.token}"><strong>${esc(m.word)}</strong><small>${esc(m.meaning || hint)}</small></button>`).join("")}</div>${draft ? '<button class="primary" data-action="preview">提交学习笔记</button>' : '<button class="primary" data-action="review">查看原句复习</button>'}`;
+  $("#notes").hidden = !draft && doc.marks.length === 0;
+  $("#notes").innerHTML = `<div class="row"><h2>${draft ? "划词笔记" : "文章笔记"}</h2><span class="state">${doc.marks.length} 处</span></div><p class="quiet">${draft ? "选中或双击英文单词查看释义。划词和释义修改自动保存，标记可随时移除。" : "可继续划词、编辑释义或移除标记。修改自动保存并同步到原句复习和生词复习。"}</p><div class="sidewords">${doc.marks.map(m => `<button class="sideword" data-action="locate" data-sid="${m.sentence}" data-tok="${m.token}"><strong>${esc(m.word)}</strong><small>${esc(m.meaning || hint)}</small></button>`).join("")}</div>${draft ? '<button class="primary" data-action="preview">提交学习笔记</button>' : ''}`;
 }
 function reviewCard(s, list, preview = false) {
   return `<section class="reviewcard"><p class="example">${words(s.text, list)}</p>${preview ? "" : translationHtml()}<div class="defs">${list.map(m => `<div class="def"><strong>${esc(m.word)}</strong><span class="meaning">${esc(m.meaning || "暂未填写释义")}</span>${preview ? `<button class="link" data-action="drop" data-sid="${s.id}" data-tok="${m.token}">移除</button>` : ""}</div>`).join("")}</div>${preview ? "" : `<div class="cardfoot"><span>${esc(s.title)}</span><button class="minor" data-action="speak-sentence">朗读原句</button><a href="#article/${s.article}/${s.id}">回到原文 ↗</a></div>`}</section>`;
