@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#254e44"><title>拾词 · 六级阅读手记</title><link rel="icon" href="data:,"><link rel="stylesheet" href="/style.css"><script defer src="/speech.js"></script><script defer src="/app.js"></script></head>
-<body><header class="top"><div class="bar"><a class="brand" href="#library" aria-label="拾词书桌"><svg viewBox="0 0 40 40" aria-hidden="true"><rect x="1" y="1" width="38" height="38" rx="11" fill="#234f44"/><path d="M8 12q7-2 12 3 5-5 12-3v16q-7-1-12 3-5-4-12-3z" fill="none" stroke="#fcf7dc" stroke-width="1.6"/><path d="M20 15v15M12 17q3 0 5 2m-5 3 5 2" stroke="#e3c575" fill="none" stroke-width="1.6"/></svg><strong>拾词</strong><span>六级阅读手记</span></a><nav><a href="#library" id="nav-library">我的书桌</a><a href="#review" id="nav-review">原句复习</a><a href="#vocabulary" id="nav-vocabulary">生词复习</a></nav><span class="local"><i></i> 本地学习空间</span></div></header>
+<body><header class="top"><div class="bar"><a class="brand" href="#library" aria-label="拾词书桌"><svg viewBox="0 0 40 40" aria-hidden="true"><rect x="1" y="1" width="38" height="38" rx="11" fill="#234f44"/><path d="M8 12q7-2 12 3 5-5 12-3v16q-7-1-12 3-5-4-12-3z" fill="none" stroke="#fcf7dc" stroke-width="1.6"/><path d="M20 15v15M12 17q3 0 5 2m-5 3 5 2" stroke="#e3c575" fill="none" stroke-width="1.6"/></svg><strong>拾词</strong><span>六级阅读手记</span></a><nav><a href="#library" id="nav-library">我的书桌</a><a href="#review" id="nav-review">原句复习</a><a href="#vocabulary" id="nav-vocabulary">生词复习</a><a href="#practice" id="nav-practice">翻译练习</a></nav><span class="local"><i></i> 本地学习空间</span></div></header>
 <section id="speech-bar" class="speech-bar" aria-label="朗读控制" hidden>
 <label class="speech-switch"><input id="speech-enabled" type="checkbox" role="switch" checked>朗读服务</label>
 <label>英语语音 <select id="speech-voice" aria-label="英语语音"></select></label>
@@ -11,6 +11,8 @@
 <label class="repeat-options">总次数 <select id="speech-repeat-count" aria-label="循环总次数"><option value="2">2 遍</option><option value="3" selected>3 遍</option><option value="5">5 遍</option></select></label>
 <label class="repeat-options">间隔 <select id="speech-repeat-gap" aria-label="循环间隔"><option value="0">0 秒</option><option value="2" selected>2 秒</option><option value="5">5 秒</option></select></label>
 <label class="speech-switch"><input id="translation-enabled" type="checkbox" role="switch">句子翻译</label>
+<label class="speech-switch"><input id="practice-enabled" type="checkbox" role="switch">翻译练习</label>
+<button class="soft" data-action="translation-settings">翻译设置</button>
 <button class="soft" id="speech-pause" disabled>暂停</button><button class="soft" id="speech-stop" disabled>停止</button>
 <span class="speech-network">Edge TTS · 联网朗读，所选句子或单词会发送至微软语音服务</span><span class="translation-network">正在读取翻译服务信息…</span><span id="speech-status" role="status"></span></section>
 <main id="main"></main><input type="file" id="file" accept=".txt,.pdf" multiple hidden><dialog id="dialog"></dialog><div id="popover" hidden></div><div id="toast" role="status" hidden></div></body></html>

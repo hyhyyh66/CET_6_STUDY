@@ -1,4 +1,159 @@
 "use strict";
+let practiceSession = null, practiceSequence = 0, practiceRows = [], practiceFilter = "pending";
+
+function practiceDraftKey(record) { return `practice-draft-${record.article}-${record.sentence}`; }
+function rememberPracticeDraft() {
+  const input = document.querySelector("#practice-answer");
+  if (!input || !practiceSession) return;
+  try {
+    localStorage.setItem(practiceDraftKey(practiceSession.record), JSON.stringify({
+      draft:input.value, version:practiceSession.record.version
+    }));
+  } catch (_) { /* The explicit save button remains available. */ }
+}
+function initPractice() {
+  const toggle = $("#practice-enabled");
+  toggle.checked = localStorage.getItem("practice-enabled") === "true";
+  document.body.classList.toggle("practice-off", !toggle.checked);
+  toggle.addEventListener("change", () => {
+    localStorage.setItem("practice-enabled", String(toggle.checked));
+    document.body.classList.toggle("practice-off", !toggle.checked);
+  });
+  document.addEventListener("input", event => {
+    if (event.target.id !== "practice-answer") return;
+    rememberPracticeDraft();
+    $("#practice-status").textContent = "译文有修改，点击「保存译文」保存在本机；重新批改需再次点击 AI 批改。";
+  });
+  document.addEventListener("change", event => {
+    if (event.target.id === "practice-filter") {
+      practiceFilter = event.target.value;
+      practicePage().catch(report);
+    }
+  });
+}
+
+function practiceFeedback(record) {
+  const feedback = record.feedback;
+  if (!feedback) return "";
+  const list = values => `<ul>${values.map(value => `<li>${esc(value)}</li>`).join("")}</ul>`;
+  return `<section class="practice-feedback">
+    <h3>AI 参考批改</h3><p class="quiet">${esc(record.model)} · 针对下方提交版本，不是考试评分；修改后的译文需重新批改。</p>
+    <blockquote class="practice-submitted">${esc(record.reviewed_answer)}</blockquote>
+    <p>${esc(feedback.summary)}</p>
+    ${feedback.strengths.length ? `<h4>这些表达可以保留</h4>${list(feedback.strengths)}` : ""}
+    <h4>需要检查的地方</h4>
+    ${feedback.issues.length ? feedback.issues.map(issue => `<div class="practice-issue">
+      <span class="state">${esc(issue.category)}</span><p lang="en" class="practice-evidence">${esc(issue.source_quote)}</p>
+      <p>${esc(issue.explanation)}</p><p><strong>修改建议：</strong>${esc(issue.suggestion)}</p></div>`).join("")
+      : '<p>AI 本次未指出具体问题；仍请核对原文的信息和语气。</p>'}
+    <details><summary>看句子结构</summary><p>${esc(feedback.main_clause)}</p>${list(feedback.structure_notes)}</details>
+    <details><summary>看参考译文（建议先自己修改）</summary><p>${esc(feedback.reference_translation)}</p></details>
+  </section>`;
+}
+
+async function openPractice(article, sentence, fresh = false) {
+  rememberPracticeDraft();
+  const sequence = ++practiceSequence, ticket = generation;
+  const record = await api(`/api/practice/${article}/${sentence}`);
+  if (sequence !== practiceSequence || ticket !== generation) return;
+  let draft = fresh ? "" : record.draft;
+  if (!fresh) {
+    try {
+      const local = JSON.parse(localStorage.getItem(practiceDraftKey(record)));
+      if (local && local.version === record.version && typeof local.draft === "string") draft = local.draft;
+    } catch (_) {}
+  }
+  showDialog(fresh ? "重新翻译这句话" : "翻译练习", `
+    <p class="quiet">${esc(record.title)}</p><p class="practice-source" lang="en">${esc(record.text)}</p>
+    <label for="practice-answer">我的译文</label>
+    <textarea id="practice-answer" rows="5" maxlength="4000" placeholder="先自己翻译，不确定的地方可以标注问号。">${esc(draft)}</textarea>
+    <p class="quiet">AI 批改会把当前句、标题、有限上下文和你的译文发送给 DeepSeek，并使用你的 API 额度。保存译文和加入复习不调用 AI。</p>
+    <p id="practice-status" class="quiet" role="status">${fresh ? "本次从空白开始，上次的译文和批改暂不显示。" : "先写出自己的理解，再查看具体误读和原因。"}</p>
+    <div id="practice-feedback">${fresh ? "" : practiceFeedback(record)}</div>`,
+    `<button class="soft" data-action="practice-save">保存译文</button>
+     <button class="soft" data-action="practice-bookmark">${record.saved ? "已加入错句复习" : "加入错句复习"}</button>
+     <button class="primary" data-action="practice-check">请 AI 批改</button>`);
+  practiceSession = {record, sequence};
+}
+
+async function practicePage(ticket = generation) {
+  const rows = await api("/api/practice");
+  if (ticket !== generation || !location.hash.startsWith("#practice")) return;
+  practiceRows = rows;
+  const filtered = rows.filter(row => practiceFilter === "all" || (practiceFilter === "mastered" ? row.mastered : !row.mastered));
+  main.innerHTML = `<div class="reviewhead"><div><h1>翻译练习 · 错句复习</h1>
+    <p class="quiet">共 ${rows.length} 句 · ${rows.filter(row => !row.mastered).length} 句待复习。点击「重新练习」先独立翻译，旧答案默认隐藏。</p></div>
+    <select id="practice-filter" aria-label="筛选练习"><option value="pending">待复习</option><option value="all">全部</option><option value="mastered">已掌握</option></select></div>
+    ${filtered.length ? `<div class="cards">${filtered.map(row => `<section class="reviewcard practice-card" data-article="${row.article}" data-sentence="${row.sentence}">
+      <p class="example" lang="en">${esc(row.text)}</p><p class="quiet">${esc(row.title)} · ${row.mastered ? "已掌握" : "待复习"}</p>
+      <div class="practice-actions"><button class="primary" data-action="practice-retry">重新练习</button>
+      <button class="soft" data-action="practice-master">${row.mastered ? "继续复习" : "标记掌握"}</button>
+      <button class="minor" data-action="practice-remove">移出复习</button><a class="link" href="#article/${row.article}/${row.sentence}">回到原文</a></div>
+      <details class="practice-history"><summary>查看上次的译文与批改</summary><h4>已保存的译文</h4><p class="practice-submitted">${esc(row.draft || "尚未保存译文")}</p>${practiceFeedback(row)}</details>
+    </section>`).join("")}</div>` : empty("这里还没有练习句子", "在阅读或原句复习页面开启「翻译练习」，点击句子旁的「练翻译」，再加入错句复习。")}`;
+  $("#practice-filter").value = practiceFilter;
+}
+
+async function practiceAction(button) {
+  const action = button.dataset.action;
+  if (action === "practice-open" || action === "practice-retry") {
+    const container = button.closest(".sentence, .reviewcard");
+    button.disabled = true;
+    return openPractice(Number(container.dataset.article), Number(container.dataset.sentence), action === "practice-retry");
+  }
+  if (action === "practice-master" || action === "practice-remove") {
+    const card = button.closest(".practice-card");
+    const record = practiceRows.find(row => row.sentence === Number(card.dataset.sentence) && row.article === Number(card.dataset.article));
+    if (!record) return;
+    button.disabled = true;
+    await api("/api/practice/save", {...record, saved:action !== "practice-remove", mastered:action === "practice-master" ? !record.mastered : false});
+    await practicePage();
+    return;
+  }
+  const session = practiceSession, input = $("#practice-answer"), status = $("#practice-status");
+  if (!session || !input) return;
+  if (action === "practice-check" && !input.value.trim()) throw new Error("请先写下自己的译文，再请求 AI 批改。");
+  const body = {article:session.record.article, sentence:session.record.sentence, version:session.record.version, draft:input.value};
+  if (action === "practice-bookmark") body.saved = true;
+  const controls = [...dialog.querySelectorAll('[data-action^="practice-"]')];
+  controls.forEach(control => { control.disabled = true; });
+  input.readOnly = true;
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 65000);
+  status.textContent = action === "practice-check" ? "正在保存译文并请求 AI 批改…" : "正在保存…";
+  try {
+    const response = await fetch(action === "practice-check" ? "/api/practice/check" : "/api/practice/save", {
+      method:"POST", headers:{"X-Notebook":"1","Content-Type":"application/json"}, body:JSON.stringify(body), signal:controller.signal
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "练习操作失败，请重试。");
+    if (practiceSession !== session || !input.isConnected) return;
+    session.record = result;
+    try { localStorage.removeItem(practiceDraftKey(result)); } catch (_) {}
+    $("#dialog-error").textContent = "";
+    if (action === "practice-check") $("#practice-feedback").innerHTML = practiceFeedback(result);
+    dialog.querySelector('[data-action="practice-bookmark"]').textContent = result.saved ? "已加入错句复习" : "加入错句复习";
+    status.textContent = action === "practice-check" ? (result.cached ? "已复用相同译文的批改，本次未调用 AI。" : "批改已保存。先查看具体问题，再修改自己的译文。")
+      : action === "practice-bookmark" ? "译文已保存，并加入顶部「翻译练习」的错句复习。" : "译文已保存在本机；现有批改仍对应上次提交版本。";
+    if (location.hash.startsWith("#practice")) await practicePage();
+  } catch (error) {
+    // A failed network request may still have saved the draft on the server.
+    try {
+      const latest = await api(`/api/practice/${body.article}/${body.sentence}`);
+      if (practiceSession === session && input.isConnected) session.record = latest;
+    } catch (_) {}
+    if (practiceSession === session && input.isConnected) {
+      rememberPracticeDraft();
+      status.textContent = "操作未完成；你的输入仍保留。";
+      $("#dialog-error").textContent = error.name === "AbortError" ? "等待超时，已经发出的 AI 请求可能仍会产生用量。稍后重新打开练习查看结果。" : error.message;
+    }
+  } finally {
+    clearTimeout(timer);
+    input.readOnly = false;
+    controls.forEach(control => { control.disabled = false; });
+  }
+}
+
+"use strict";
 const $ = selector => document.querySelector(selector);
 const main = $("#main"), dialog = $("#dialog"), pop = $("#popover");
 const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
@@ -8,16 +163,48 @@ let changing = false, activeWord = null, toastTimer;
 let sentenceClickTimer, selectedInReader = false;
 let batchImport = null;
 const translationToggle = $("#translation-enabled");
-fetch("/api/translation-config").then(response => {
-  if (!response.ok) throw new Error("Translation configuration unavailable");
-  return response.json();
-}).then(config => { $(".translation-network").textContent = config.note; })
-  .catch(() => { $(".translation-network").textContent = "翻译服务信息暂不可用，请刷新页面。"; });
-const translationCache = new Map(), translationRequests = new Map();
+async function refreshTranslationConfig(signal) {
+  const response = await fetch("/api/translation-config", {signal});
+  const config = await response.json();
+  if (!response.ok) throw new Error(config.error || "无法读取翻译设置。");
+  $(".translation-network").textContent = config.note;
+  return config;
+}
+refreshTranslationConfig().catch(() => {
+  $(".translation-network").textContent = "翻译服务信息暂不可用，请刷新页面。";
+});
+async function openTranslationSettings() {
+  const config = await refreshTranslationConfig();
+  if (!config.models) throw new Error("请关闭旧服务窗口，重新运行「开始学习.cmd」，再刷新页面。");
+  showDialog("句子翻译设置", `
+    <p class="quiet">DeepSeek 会收到当前句、文章标题及有限上下文，只返回当前句译文。按你的 API 账户计费，成功译文会在本机缓存。</p>
+    <label for="translation-provider">翻译服务</label>
+    <select id="translation-provider"><option value="deepseek">DeepSeek · 结合上下文</option><option value="legacy">${esc(config.legacy_provider)} · 原翻译方式</option></select>
+    <label for="deepseek-model">DeepSeek 模型</label>
+    <select id="deepseek-model">${Object.entries(config.models).map(([id, name]) => `<option value="${esc(id)}" ${id === config.model ? "selected" : ""}>${esc(name)}</option>`).join("")}</select>
+    <label for="deepseek-key">DeepSeek API Key</label>
+    <input id="deepseek-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="256" placeholder="${config.has_key ? "已保存密钥；留空保持不变" : "粘贴你在 DeepSeek 开放平台创建的 API Key"}">
+    <p class="quiet">密钥仅保存在本机 data/translation-settings.json，不会回传到页面或写入浏览器存储。备份 data 时也会包含密钥，请妥善保管。</p>
+    <label class="key-clear"><input id="deepseek-clear" type="checkbox">删除已保存的密钥（需切回原翻译方式）</label>
+    <p id="translation-settings-status" class="quiet" role="status">${config.mode === "deepseek" ? "当前已启用 DeepSeek。" : "当前仍使用原翻译方式；填写密钥并保存后启用 DeepSeek。"}</p>
+    <p class="quiet">测试连接会翻译一句示例，产生少量 API 用量。仅保存设置不会调用 DeepSeek。</p>`,
+    '<button class="soft" data-action="test-translation-settings">测试已保存的配置</button><button class="primary" data-action="save-translation-settings">保存设置</button>');
+  $("#translation-provider").value = config.mode === "deepseek" || !config.has_key ? "deepseek" : "legacy";
+}
+function resetTranslationOutputs() {
+  stopTranslations();
+  for (const output of document.querySelectorAll(".sentence-translation")) { output.hidden = true; output.textContent = ""; }
+  for (const button of document.querySelectorAll(".translation-button")) {
+    button.textContent = "看翻译";
+    button.setAttribute("aria-expanded", "false");
+  }
+}
+
+const translationRequests = new Map();
 translationToggle.checked = localStorage.getItem("translation-enabled") === "true";
 document.body.classList.toggle("translation-off", !translationToggle.checked);
 function translationHtml() {
-  return '<button class="minor translation-button" data-action="translate-sentence" aria-expanded="false">看翻译</button><span class="sentence-translation" role="status" hidden></span>';
+  return '<button class="minor practice-button" data-action="practice-open">练翻译</button><button class="minor translation-button" data-action="translate-sentence" aria-expanded="false">看翻译</button><span class="sentence-translation" role="status" hidden></span>';
 }
 function stopTranslations() {
   for (const controller of translationRequests.values()) controller.abort();
@@ -43,22 +230,19 @@ async function translateSentence(button) {
   output.textContent = "正在翻译…";
   button.textContent = "收起翻译";
   button.setAttribute("aria-expanded", "true");
-  const timer = setTimeout(() => controller.abort("timeout"), 45000);
+  const timer = setTimeout(() => controller.abort("timeout"), 65000);
   try {
-    let translated = translationCache.get(text);
-    if (!translated) {
-      const response = await fetch("/api/translate", {
-        method:"POST", headers:{"X-Notebook":"1","Content-Type":"application/json"},
-        body:JSON.stringify({text}), signal:controller.signal
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "翻译失败，请重试。");
-      translated = result.translation;
-      if (typeof translated !== "string" || !translated.trim()) throw new Error("没有获取到译文，请重试。");
-      if (translationCache.size >= 512) translationCache.delete(translationCache.keys().next().value);
-      translationCache.set(text, translated);
-    }
-    if (controller.signal.aborted || !button.isConnected || !translationToggle.checked) return;
+    await refreshTranslationConfig(controller.signal);
+    const response = await fetch("/api/translate", {
+      method:"POST", headers:{"X-Notebook":"1","Content-Type":"application/json"},
+      body:JSON.stringify({text, article:Number(container.dataset.article), sentence:Number(container.dataset.sentence)}),
+      signal:controller.signal
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "翻译失败，请重试。");
+    const translated = result.translation;
+    if (typeof translated !== "string" || !translated.trim()) throw new Error("没有获取到译文，请重试。");
+    if (controller.signal.aborted || !button.isConnected || !translationToggle.checked || translationRequests.get(button) !== controller) return;
     output.textContent = translated;
   } catch (error) {
     if (!button.isConnected || !translationToggle.checked || translationRequests.get(button) !== controller) return;
@@ -120,7 +304,7 @@ function words(text, marks, interactive = false) {
   return html + esc(text.slice(end));
 }
 function sentenceHtml(s) {
-  return `<span class="sentence" id="s-${s.id}" data-sentence="${s.id}"><span class="sentence-text">${words(s.text, marksBySentence.get(s.id) || [], true)}</span><button class="sentence-play" data-action="speak-reader-sentence" aria-label="朗读这句">▷</button>${translationHtml()}</span>`;
+  return `<span class="sentence" id="s-${s.id}" data-sentence="${s.id}" data-article="${doc.id}"><span class="sentence-text">${words(s.text, marksBySentence.get(s.id) || [], true)}</span><button class="sentence-play" data-action="speak-reader-sentence" aria-label="朗读这句">▷</button>${translationHtml()}</span>`;
 }
 function library(items) {
   main.innerHTML = `<section class="hero"><div><h1>我的阅读书桌</h1><p>从一篇英语阅读开始，把遇到的生词留在原句里。</p><button class="primary" data-action="import">＋ 导入阅读材料</button></div><div class="books" aria-hidden="true"><b></b><b></b><b></b><b></b></div></section>
@@ -142,7 +326,7 @@ function sidebar() {
   $("#notes").innerHTML = `<div class="row"><h2>${draft ? "划词笔记" : "文章笔记"}</h2><span class="state">${doc.marks.length} 处</span></div><p class="quiet">${draft ? "选中或双击英文单词查看释义。划词和释义修改自动保存，标记可随时移除。" : "可继续划词、编辑释义或移除标记。修改自动保存并同步到原句复习和生词复习。"}</p><div class="sidewords">${doc.marks.map(m => `<button class="sideword" data-action="locate" data-sid="${m.sentence}" data-tok="${m.token}"><strong>${esc(m.word)}</strong><small>${esc(m.meaning || hint)}</small></button>`).join("")}</div>${draft ? '<button class="primary" data-action="preview">提交学习笔记</button>' : ''}`;
 }
 function reviewCard(s, list, preview = false) {
-  return `<section class="reviewcard"><p class="example">${words(s.text, list)}</p>${preview ? "" : translationHtml()}<div class="defs">${list.map(m => `<div class="def"><strong>${esc(m.word)}</strong><span class="meaning">${esc(m.meaning || "暂未填写释义")}</span>${preview ? `<button class="link" data-action="drop" data-sid="${s.id}" data-tok="${m.token}">移除</button>` : ""}</div>`).join("")}</div>${preview ? "" : `<div class="cardfoot"><span>${esc(s.title)}</span><button class="minor" data-action="speak-sentence">朗读原句</button><a href="#article/${s.article}/${s.id}">回到原文 ↗</a></div>`}</section>`;
+  return `<section class="reviewcard" data-sentence="${s.id}" data-article="${s.article || doc?.id}"><p class="example">${words(s.text, list)}</p>${preview ? "" : translationHtml()}<div class="defs">${list.map(m => `<div class="def"><strong>${esc(m.word)}</strong><span class="meaning">${esc(m.meaning || "暂未填写释义")}</span>${preview ? `<button class="link" data-action="drop" data-sid="${s.id}" data-tok="${m.token}">移除</button>` : ""}</div>`).join("")}</div>${preview ? "" : `<div class="cardfoot"><span>${esc(s.title)}</span><button class="minor" data-action="speak-sentence">朗读原句</button><a href="#article/${s.article}/${s.id}">回到原文 ↗</a></div>`}</section>`;
 }
 function reviewPage(initial) {
   const articles = new Map(review.map(s => [s.article,s.title]));
@@ -221,8 +405,10 @@ async function route() {
   const parts = location.hash.slice(1).split("/");
   const inReview = parts[0] === "review";
   const inVocabulary = parts[0] === "vocabulary";
+  const inPractice = parts[0] === "practice";
+  $("#nav-practice").classList.toggle("active", inPractice);
   $("#nav-vocabulary").classList.toggle("active", inVocabulary);
-  $("#nav-library").classList.toggle("active", !inReview && !inVocabulary);
+  $("#nav-library").classList.toggle("active", !inReview && !inVocabulary && !inPractice);
   $("#nav-review").classList.toggle("active", inReview);
   try {
     if (parts[0] === "article" && /^\d+$/.test(parts[1])) {
@@ -232,6 +418,10 @@ async function route() {
       const target = /^\d+$/.test(parts[2]) && $("#s-"+parts[2]);
       if (target) { target.classList.add("focus-sentence"); target.scrollIntoView({block:"center"}); }
       else window.scrollTo(0, Number(localStorage.getItem("position-"+doc.id)) || 0);
+    } else if (inPractice) {
+      speechView(true);
+      await practicePage(ticket);
+      if (ticket === generation) window.scrollTo(0,0);
     } else if (inReview || inVocabulary) {
       const data = await api("/api/review");
       if (ticket !== generation) return;
@@ -403,7 +593,40 @@ document.addEventListener("click", async e => {
   }
   const sid = Number(btn.dataset.sid), tok = Number(btn.dataset.tok);
   try {
+    if (btn.dataset.action.startsWith("practice-")) return await practiceAction(btn);
     switch (btn.dataset.action) {
+      case "translation-settings": return await openTranslationSettings();
+      case "save-translation-settings": {
+        btn.disabled = true;
+        const status = $("#translation-settings-status");
+        const keyInput = $("#deepseek-key");
+        const config = await api("/api/translation-config", {
+          provider:$("#translation-provider").value, model:$("#deepseek-model").value,
+          api_key:keyInput.value.trim(), clear_key:$("#deepseek-clear").checked
+        });
+        keyInput.value = "";
+        keyInput.placeholder = config.has_key ? "已保存密钥；留空保持不变" : "填写 API Key";
+        resetTranslationOutputs();
+        $(".translation-network").textContent = config.note;
+        if (status.isConnected) {
+          $("#dialog-error").textContent = "";
+          $("#deepseek-clear").checked = false;
+          status.textContent = "已保存，当前使用 " + config.provider + "。可以测试连接，或关闭窗口后查看句子翻译。";
+        }
+        break;
+      }
+      case "test-translation-settings": {
+        btn.disabled = true;
+        const status = $("#translation-settings-status");
+        status.textContent = "正在用已保存的配置测试连接…";
+        const result = await api("/api/translation-test", {});
+        if (status.isConnected) {
+          $("#dialog-error").textContent = "";
+          status.textContent = "连接成功。示例译文：" + result.translation;
+        }
+        break;
+      }
+
       case "translate-sentence":
         await translateSentence(btn);
         break;
@@ -495,5 +718,10 @@ dialog.addEventListener("close", () => {
     dialog.replaceChildren();
   }
 });
-window.addEventListener("hashchange", route);
-route();
+if (typeof initPractice === "function") {
+  window.addEventListener("hashchange", route);
+  initPractice();
+  route();
+} else {
+  main.innerHTML = empty("请重启学习服务", "新增翻译练习需要更新后的服务。请关闭旧服务窗口，重新运行启动文件，再刷新页面。");
+}
